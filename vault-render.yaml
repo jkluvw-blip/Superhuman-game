@@ -1,0 +1,16 @@
+services:
+  - type: web
+    name: secret-vault-game
+    runtime: python
+    plan: free
+    region: singapore
+    buildCommand: pip install 'psycopg[binary]'
+    startCommand: python vault_server.py
+    healthCheckPath: /health
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: secret-vault-db
+          property: connectionString
+      - key: ROOM_CODE
+        value: Vault-8-7F29K
