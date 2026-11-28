@@ -61,7 +61,7 @@ class H(BaseHTTPRequestHandler):
                 d,day,r=clock()
                 if self.path=="/join":
                     n=str(p.get("name","")).strip(); pin=str(p.get("pin","")); code=str(p.get("code",""))
-                    if not hmac.compare_digest(code,os.environ["ROOM_CODE"]): return self.send({"error":"방 코드 오류"},403)
+                    if not hmac.compare_digest(code.strip().encode(),os.environ["ROOM_CODE"].encode()): return self.send({"error":"방 코드 오류"},403)
                     if not 1<=len(n)<=12 or not 6<=len(pin)<=64: return self.send({"error":"닉네임 1~12자, 비밀번호 6~64자"},400)
                     old=c.execute("SELECT salt,pin,token FROM players WHERE name=%s",(n,)).fetchone()
                     if old:
@@ -93,4 +93,42 @@ PAGE="""<!doctype html><html lang="ko"><meta charset="utf-8"><meta name="viewpor
 let token=localStorage.getItem('vaultToken')||'',s;const $=x=>document.getElementById(x),fmt=x=>Number(x).toLocaleString('ko-KR')+' C',esc=x=>String(x).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));async function api(path,data){let r=await fetch(path,{method:data?'POST':'GET',headers:{'Content-Type':'application/json','X-Token':token},body:data?JSON.stringify(data):undefined});return r.json()}async function join(){try{let x=await api('/join',{name:$('nick').value,pin:$('pin').value,code:$('code').value});if(x.error)throw Error(x.error);token=x.token;localStorage.setItem('vaultToken',token);refresh()}catch(e){$('err').textContent=e.message}}function preset(p){if(s)$('amount').value=Math.floor(s.balance*p)}async function bid(a){try{let x=await api('/bid',{amount:a??Number($('amount').value),day:s.day,r:s.r});if(x.error)throw Error(x.error);render(x);$('msg').textContent=a===0?'입찰 취소 완료':'비밀 입찰 저장 완료'}catch(e){$('msg').textContent=e.message}}function ranks(a){return a.map(([n,b],i)=>'<div class="rank '+(n===s.name?'me':'')+'"><span>'+ (i+1)+'. '+esc(n)+'</span><b>'+fmt(b)+'</b></div>').join('')}function render(x){let changed=!s||s.r!==x.r||s.history.length!==x.history.length;s=x;$('login').hidden=true;$('app').hidden=false;$('round').textContent=x.active?'ROUND '+(x.r-17)+' / 30':'경기 종료';$('phase').textContent=x.active?'금고 개방까지':'다음 경기 시작까지';$('count').textContent='입찰 완료 '+x.count+' / 8명 · 금액 비공개';$('balance').textContent=fmt(x.balance);$('own').textContent='현재 내 입찰: '+fmt(x.own);$('submit').disabled=!x.active;$('ranking').innerHTML=ranks(x.rank);$('finalrank').innerHTML=ranks(x.final);if(changed)$('history').innerHTML=x.history.map(h=>'<details><summary>R'+(h.r-17)+' · '+(h.winners.length?h.winners.map(esc).join(', ')+' 승리':'전원 환불')+' · '+fmt(h.pot)+'</summary>'+Object.entries(h.bids).sort((a,b)=>b[1]-a[1]).map(([n,v])=>'<div class="rank"><span>'+esc(n)+'</span><span>'+fmt(v)+' → '+fmt(h.payout[n])+'</span></div>').join('')+'</details>').join('')||'<p class="muted">아직 개방된 금고가 없습니다.</p>';tick()}async function refresh(){if(!token)return;try{let x=await api('/state');if(x.error){$('err').textContent=x.error;return}render(x)}catch(e){$('msg').textContent='서버 연결 확인 중'}}function tick(){if(!s)return;let t=Math.max(0,s.end-Math.floor(Date.now()/1000));$('timer').textContent=[Math.floor(t/3600),Math.floor(t/60)%60,t%60].map(n=>String(n).padStart(2,'0')).join(':')}setInterval(tick,250);setInterval(refresh,5000);refresh();</script></html>"""
 if __name__=="__main__":
     setup()
-    ThreadingHTTPServer(("0.0.0.0",int(os.environ.get("PORT","8080"))),H).serve_forever()
+    from threading import Thread
+    from urllib.request import Request, urlopen
+    from urllib.error import HTTPError
+    server=ThreadingHTTPServer(("0.0.0.0",int(os.environ.get("PORT","8080"))),H)
+    Thread(target=server.serve_forever,daemon=True).start()
+    base="http://127.0.0.1:"+str(server.server_port)
+    def probe(path, data=None, token=""):
+        request=Request(base+path,data=json.dumps(data).encode() if data is not None else None,headers={"Content-Type":"application/json","X-Token":token})
+        try:
+            with urlopen(request,timeout=10) as response:
+                return response.status,response.read()
+        except HTTPError as e:
+            return e.code,e.read()
+    try:
+        assert probe("/?utm_source=chatgpt.com")[0]==200
+        code=os.environ["ROOM_CODE"]
+        assert probe("/join",{"name":"","pin":"","code":code})[0]==400
+        assert probe("/join",{"name":"","pin":"","code":code+"!"})[0]==403
+        with connect() as c:
+            total=c.execute("SELECT count(*) FROM players").fetchone()[0]
+        if total<8:
+            name="T"+secrets.token_hex(5); pin=secrets.token_hex(12)
+            try:
+                status,body=probe("/join",{"name":name,"pin":pin,"code":code})
+                assert status==200
+                token=json.loads(body)["token"]
+                assert probe("/state",token=token)[0]==200
+                status,body=probe("/join",{"name":name,"pin":pin,"code":code})
+                assert status==200 and json.loads(body)["token"]==token
+                print("VAULT SELFTEST PASS: public path, room code, account signup, login and balance API",flush=True)
+            finally:
+                with connect() as c:
+                    c.execute("DELETE FROM players WHERE name=%s",(name,))
+        else:
+            print("VAULT SELFTEST PASS: public path and room code; signup skipped because room is full",flush=True)
+    except Exception as e:
+        print("VAULT SELFTEST FAILED:",type(e).__name__,str(e),flush=True)
+    from threading import Event
+    Event().wait()
