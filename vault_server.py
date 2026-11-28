@@ -2,6 +2,7 @@ import os, json, secrets, hashlib, hmac, time
 from datetime import datetime, timedelta, timezone
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from threading import Lock
+from urllib.parse import urlsplit
 import psycopg
 K=timezone(timedelta(hours=9)); lock=Lock()
 def connect():
@@ -39,11 +40,13 @@ class H(BaseHTTPRequestHandler):
         b=data.encode() if html else json.dumps(data,ensure_ascii=False).encode()
         self.send_response(status); self.send_header("Content-Type","text/html; charset=utf-8" if html else "application/json; charset=utf-8"); self.send_header("Cache-Control","no-store"); self.send_header("Content-Length",str(len(b))); self.end_headers(); self.wfile.write(b)
     def do_GET(self):
+        self.path=urlsplit(self.path).path
         if self.path=="/": return self.send(PAGE,html=True)
         if self.path=="/health": return self.send({"ok":True})
         if self.path=="/state": return self.run({})
         self.send({"error":"Not found"},404)
     def do_POST(self):
+        self.path=urlsplit(self.path).path
         try:
             size=int(self.headers.get("Content-Length","0"))
             if not 0<size<=4096: return self.send({"error":"잘못된 요청"},400)
